@@ -9,19 +9,40 @@ async fn main() {
     loop{
         //get socket from listener and ignore the IP and port of the connection
         let (socket, _) = listener.accept().await.unwrap();
-        process(socket).await;
+        tokio::spawn(async move {
+            process(socket).await;
+        });
     }
 }
 
 async fn process(socket: TcpStream) {
+    use mini_redis::Command::{self, Get, Set};
+    use std::collections::HashMap;
+
+    //data storage
+    let mut db = HashMap::new();
+
     //Connection enables reading/writing redis frames
     let mut connection = Connection::new(socket);
 
-    if let Some(frame) = connection.read_frame().await.unwrap() {
-        println!("GOT: {:?}", frame);
+    while let Some(frame) = connection.read_frame().await.unwrap() {
+        let response = match Command::from_frame(frame).unwrap() {
+            Set(cmd) => {
+                //Store value as 'Vec<u8>'
+                db.insert(cmd.key().to_string(), cmd.value().to_vec());
+                Frame::Simple("OK".to_string())
+            }
+            Get(cmd) => {
+                if let Some(value) = db.get(cmd.key()) {
+                    Frame::Bulk(value.clone().into())
+                } else {
+                    Frame::Null
+                }
+            }
+            cmd => panic!("unimplemented {:?}", cmd),
+        };
 
-        //Respond with error since not implemented yet
-        let response = Frame::Error("unimplemented".to_string());
+        //send response to client
         connection.write_frame(&response).await.unwrap();
     }
 }
